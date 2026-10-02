@@ -297,6 +297,7 @@
   .max-num.ok{color:var(--success);}
 
   ::placeholder{color:#BFB49C;}
+  input.invalid-combo{border-color:var(--danger)!important;background:var(--danger-bg);}
 
   @media (max-width:380px){
     .stat-pill{min-width:76px;padding:7px 9px;}
@@ -466,8 +467,7 @@ function renderNav(){
   `).join('');
   nav.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      
-      formOpen = false;
+            formOpen = false;
       activeTab = btn.dataset.tab;
       render();
     });
@@ -585,11 +585,13 @@ function viewPaket(){
 
 function renderPaketItemRow(it, idx){
   const prods = sortedProducts();
+  const listId = `pfProdList${idx}`;
   return `<div class="item-row" data-idx="${idx}">
-    <select data-field="productId" data-idx="${idx}">
-      <option value="">— pilih produk —</option>
-      ${prods.map(p=>`<option value="${p.id}" ${p.id===it.productId?'selected':''}>${escHtml(p.name)}</option>`).join('')}
-    </select>
+    <input type="text" data-field="productId" data-idx="${idx}" list="${listId}" autocomplete="off"
+      placeholder="Ketik nama produk…" value="${escAttr(it.productId||'')}">
+    <datalist id="${listId}">
+      ${prods.map(p=>`<option value="${escAttr(p.name)}">`).join('')}
+    </datalist>
     <input type="number" min="1" step="1" data-field="qty" data-idx="${idx}" value="${it.qty}" placeholder="Qty">
     <button class="icon-btn" data-remove-item="${idx}" type="button">✕</button>
   </div>`;
@@ -809,10 +811,10 @@ function viewMutasi(){
     html += `<div class="card">
       <h3>📥 Barang Masuk dari Supplier</h3>
       <div class="field"><label>Produk</label>
-        <select id="masukProduct">
-          <option value="">— pilih produk —</option>
-          ${sortedProducts().map(p=>`<option value="${p.id}" ${p.id===masukForm.productId?'selected':''}>${escHtml(p.name)}</option>`).join('')}
-        </select>
+        <input type="text" id="masukProduct" list="masukProdList" autocomplete="off" placeholder="Ketik nama produk…" value="${escAttr(masukForm.productId||'')}">
+        <datalist id="masukProdList">
+          ${sortedProducts().map(p=>`<option value="${escAttr(p.name)}">`).join('')}
+        </datalist>
       </div>
       <div class="field-row">
         <div class="field"><label>Qty Masuk</label><input type="number" id="masukQty" min="1" value="${masukForm.qty}"></div>
@@ -829,10 +831,10 @@ function viewMutasi(){
     html += `<div class="card">
       <h3>↩️ Retur Produk (Bisa Dijual Lagi)</h3>
       <div class="field"><label>Produk</label>
-        <select id="returProduct">
-          <option value="">— pilih produk —</option>
-          ${sortedProducts().map(p=>`<option value="${p.id}" ${p.id===returForm.productId?'selected':''}>${escHtml(p.name)}</option>`).join('')}
-        </select>
+        <input type="text" id="returProduct" list="returProdList" autocomplete="off" placeholder="Ketik nama produk…" value="${escAttr(returForm.productId||'')}">
+        <datalist id="returProdList">
+          ${sortedProducts().map(p=>`<option value="${escAttr(p.name)}">`).join('')}
+        </datalist>
       </div>
       <div class="field-row">
         <div class="field"><label>Qty Retur</label><input type="number" id="returQty" min="1" value="${returForm.qty}"></div>
@@ -909,7 +911,14 @@ function bindViewEvents(){
       const field = e.target.dataset.field;
       const parentId = e.target.closest('#pfItems') ? 'pf' : (e.target.closest('#orderRows') ? 'order' : null);
       if(parentId==='pf' && paketFormState){
-        paketFormState.items[idx][field] = field==='qty' ? parseFloat(e.target.value)||0 : e.target.value;
+        if(field==='productId'){
+          const typed = e.target.value.trim();
+          const match = state.products.find(p=>p.name.toLowerCase()===typed.toLowerCase());
+          paketFormState.items[idx].productId = match ? match.id : typed;
+          e.target.classList.toggle('invalid-combo', typed.length>0 && !match);
+        } else {
+          paketFormState.items[idx][field] = parseFloat(e.target.value)||0;
+        }
       } else if(parentId==='order'){
         orderRows[idx][field] = e.target.value;
         if(activeTab==='order'){ render(); }
@@ -951,8 +960,16 @@ function bindViewEvents(){
   if(btnSavePaket) btnSavePaket.addEventListener('click', async ()=>{
     const f = paketFormState;
     if(!f.name.trim()){ showToast('Nama paket wajib diisi','error'); return; }
-    const items = f.items.filter(it=>it.productId && it.qty>0);
-    if(!items.length){ showToast('Isi minimal 1 produk dengan qty > 0','error'); return; }
+    const rawItems = f.items.filter(it=>it.productId && it.qty>0);
+    const items = [];
+    let invalidCount = 0;
+    for(const it of rawItems){
+      const p = getProduct(it.productId);
+      if(!p){ invalidCount++; continue; }
+      items.push({productId: p.id, qty: it.qty});
+    }
+    if(!items.length){ showToast('Isi minimal 1 produk yang valid (pilih dari daftar saran) dengan qty > 0','error'); return; }
+    if(invalidCount>0){ showToast(invalidCount+' item diabaikan karena nama produk tidak ditemukan di daftar','error'); }
     const trimmedName = f.name.trim();
     if(f.id){
       const pkg = getPackage(f.id);
@@ -1108,7 +1125,12 @@ function bindViewEvents(){
   });
 
   const masukProduct = document.getElementById('masukProduct');
-  if(masukProduct) masukProduct.addEventListener('change', e=>{ masukForm.productId = e.target.value; });
+  if(masukProduct) masukProduct.addEventListener('input', e=>{
+    const typed = e.target.value.trim();
+    const match = state.products.find(p=>p.name.toLowerCase()===typed.toLowerCase());
+    masukForm.productId = match ? match.id : typed;
+    e.target.classList.toggle('invalid-combo', typed.length>0 && !match);
+  });
   const masukQty = document.getElementById('masukQty');
   if(masukQty) masukQty.addEventListener('input', e=>{ masukForm.qty = e.target.value; });
   const masukNote = document.getElementById('masukNote');
@@ -1133,7 +1155,12 @@ function bindViewEvents(){
   if(btnCancelMasuk) btnCancelMasuk.addEventListener('click', ()=>{ showMasukForm=false; formOpen=false; render(); });
 
   const returProduct = document.getElementById('returProduct');
-  if(returProduct) returProduct.addEventListener('change', e=>{ returForm.productId = e.target.value; });
+  if(returProduct) returProduct.addEventListener('input', e=>{
+    const typed = e.target.value.trim();
+    const match = state.products.find(p=>p.name.toLowerCase()===typed.toLowerCase());
+    returForm.productId = match ? match.id : typed;
+    e.target.classList.toggle('invalid-combo', typed.length>0 && !match);
+  });
   const returQty = document.getElementById('returQty');
   if(returQty) returQty.addEventListener('input', e=>{ returForm.qty = e.target.value; });
   const returNote = document.getElementById('returNote');
