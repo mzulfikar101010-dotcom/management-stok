@@ -335,9 +335,9 @@
    DATA LAYER
 ========================================================= */
 // >>> GANTI URL DI BAWAH INI dengan URL Web App hasil deploy Google Apps Script kamu <<<
-const SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbzXO7nebqo0laNUrCxD28KkA9YOpPownkpw3o5PrpQAGXND9Mn7AD6_8ObyEHLGsZLM/exec';
+const SHEET_API_URL = 'PASTE_URL_WEB_APP_GOOGLE_APPS_SCRIPT_DI_SINI';
 
-let state = { products: [], packages: [], movements: [] };
+let state = { products: [], packages: [], movements: [], resi: [] };
 let uiBusy = false;
 let formOpen = false;
 
@@ -359,7 +359,8 @@ async function loadState(silent){
     state = {
       products: data.products || [],
       packages: data.packages || [],
-      movements: data.movements || []
+      movements: data.movements || [],
+      resi: data.resi || []
     };
   }catch(e){
     showToast('Gagal memuat data dari Google Sheets: ' + (e.message||''), 'error');
@@ -374,6 +375,7 @@ async function saveState(){
   }
   try{
     if(state.movements.length > 1000) state.movements = state.movements.slice(0,1000);
+    if(state.resi && state.resi.length > 2000) state.resi = state.resi.slice(0,2000);
     const res = await fetch(SHEET_API_URL, {
       method:'POST',
       headers: {'Content-Type':'text/plain;charset=utf-8'}, // hindari CORS preflight
@@ -453,7 +455,7 @@ const TABS = [
   {id:'paket',   label:'Paket',   icon:'🍬'},
   {id:'stok',    label:'Stok',    icon:'📋'},
   {id:'laporan', label:'Laporan', icon:'📊'},
-  {id:'order',   label:'Order',   icon:'🧾'},
+  {id:'resi',    label:'Resi',    icon:'📦'},
   {id:'mutasi',  label:'Mutasi',  icon:'🔁'},
 ];
 let activeTab = 'paket';
@@ -467,7 +469,8 @@ function renderNav(){
   `).join('');
   nav.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-            formOpen = false;
+      if(formOpen && !confirm('Ada form yang belum disimpan. Pindah halaman & batalkan perubahan?')) return;
+      formOpen = false;
       activeTab = btn.dataset.tab;
       render();
     });
@@ -494,7 +497,7 @@ function render(){
   if(activeTab==='paket') c.innerHTML = viewPaket();
   else if(activeTab==='stok') c.innerHTML = viewStok();
   else if(activeTab==='laporan') c.innerHTML = viewLaporan();
-  else if(activeTab==='order') c.innerHTML = viewOrder();
+  else if(activeTab==='resi') c.innerHTML = viewResi();
   else if(activeTab==='mutasi') c.innerHTML = viewMutasi();
   bindViewEvents();
   window.scrollTo(0,0);
@@ -713,80 +716,97 @@ function viewLaporan(){
 }
 
 /* =========================================================
-   VIEW: ORDER HARIAN
+   VIEW: SCAN RESI (Import PDF + Scan Packing/Retur + Riwayat)
 ========================================================= */
-let orderRows = [{ packageId:'', qty:'' }];
+let resiScanMode = 'packing'; // 'packing' | 'retur'
+let resiImportPreview = null; // array hasil parsing PDF sebelum disimpan
+let resiImportBusy = false;
+let resiFilter = 'all';
 
-function viewOrder(){
-  formOpen = true;
-  let html = `<div class="section-title"><h2>Input Order Hari Ini</h2></div>`;
+function viewResi(){
+  let html = `<div class="section-title"><h2>Scan Resi</h2></div>`;
 
-  if(!state.packages.length){
-    html += `<div class="empty-state"><span class="emoji">🧾</span>Buat paket terlebih dahulu sebelum input order.</div>`;
-    return html;
-  }
-
+  // --- Import PDF ---
   html += `<div class="card">
-    <label>Paket terjual</label>
-    <div id="orderRows">${orderRows.map((r,idx)=>renderOrderRow(r,idx)).join('')}</div>
-    <button class="btn btn-ghost btn-sm" id="btnAddOrderRow" type="button">+ Tambah Baris</button>
+    <h3>📥 Import Resi dari PDF Label</h3>
+    <div class="small muted" style="margin-bottom:8px;">Upload file PDF label pengiriman (hasil print dari marketplace). Resi & produknya akan otomatis terbaca.</div>
+    <input type="file" id="resiPdfInput" accept="application/pdf">
+    <div id="resiImportStatus" class="small muted" style="margin-top:6px;"></div>
   </div>`;
 
-  // preview kalkulasi
-  const impact = computeOrderImpact();
-  if(impact.rows.length){
+  if(resiImportPreview && resiImportPreview.length){
     html += `<div class="card">
-      <h3>Preview Pengurangan Stok</h3>
-      <table><thead><tr><th>Produk</th><th>Terpakai</th><th>Sisa Setelah</th></tr></thead>
+      <h3>Pratinjau Hasil Baca (${resiImportPreview.length} baris)</h3>
+      <div class="small muted" style="margin-bottom:8px;">Hanya baris berawalan "PAKET" yang dibaca dari label. Cek dulu, terutama yang bertanda ⚠️ (belum cocok dengan paket manapun) — pilih manual lewat dropdown.</div>
+      <div style="overflow-x:auto;">
+      <table><thead><tr><th>Resi</th><th>Teks Asli</th><th>Cocokkan ke Paket</th><th>Qty</th></tr></thead>
       <tbody>
-      ${impact.details.map(d=>`<tr>
-        <td>${escHtml(d.name)}</td>
-        <td class="stock-num">-${d.used}</td>
-        <td class="stock-num" style="color:${d.after<0?'var(--danger)':'var(--ink)'}">${d.after}</td>
+      ${resiImportPreview.map((r,idx)=>`<tr>
+        <td class="mono small">${escHtml(r.resi)}</td>
+        <td class="small">${escHtml(r.rawText)}${!r.matchType?' ⚠️':''}</td>
+        <td>
+          <select data-preview-match="${idx}">
+            <option value="">— tidak dikenali —</option>
+            ${state.packages.map(p=>`<option value="paket:${escAttr(p.id)}" ${r.matchType==='paket'&&r.matchId===p.id?'selected':''}>${escHtml(p.name)}</option>`).join('')}
+          </select>
+        </td>
+        <td><input type="number" min="1" data-preview-qty="${idx}" value="${r.qty}" style="width:60px;"></td>
       </tr>`).join('')}
       </tbody></table>
-      ${impact.hasNegative ? `<div class="small" style="color:var(--danger);margin-top:8px;">⚠️ Ada produk yang stoknya tidak cukup. Kamu tetap bisa memproses (stok akan minus), atau kurangi jumlah order.</div>` : ''}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="btn btn-primary btn-block" id="btnSaveResiImport">💾 Simpan ${resiImportPreview.length} Baris ke Database</button>
+        <button class="btn btn-ghost" id="btnCancelResiImport">Batal</button>
+      </div>
     </div>`;
   }
 
-  html += `<button class="btn btn-primary btn-block" id="btnConfirmOrder">✅ Konfirmasi &amp; Proses Order</button>`;
-  return html;
-}
-
-function renderOrderRow(r, idx){
-  return `<div class="item-row" data-idx="${idx}">
-    <select data-field="packageId" data-idx="${idx}">
-      <option value="">— pilih paket —</option>
-      ${state.packages.map(p=>`<option value="${p.id}" ${p.id===r.packageId?'selected':''}>${escHtml(p.name)}</option>`).join('')}
-    </select>
-    <input type="number" min="1" step="1" data-field="qty" data-idx="${idx}" value="${r.qty}" placeholder="Qty terjual">
-    <button class="icon-btn" data-remove-order-row="${idx}" type="button">✕</button>
+  // --- Scan ---
+  html += `<div class="card">
+    <h3>🔍 Scan Resi</h3>
+    <div class="filter-chips">
+      <button class="chip ${resiScanMode==='packing'?'active':''}" data-scan-mode="packing">📦 Mode Packing</button>
+      <button class="chip ${resiScanMode==='retur'?'active':''}" data-scan-mode="retur">↩️ Mode Retur</button>
+    </div>
+    <div class="small muted" style="margin:6px 0 8px;">
+      ${resiScanMode==='packing'
+        ? 'Scan resi saat paket selesai di-packing — stok produk otomatis berkurang.'
+        : 'Scan resi paket yang diretur — status berubah jadi Retur. Stok TIDAK otomatis bertambah; tambahkan manual lewat menu Mutasi > Retur untuk barang yang masih layak jual.'}
+    </div>
+    <input type="text" id="resiScanInput" placeholder="Scan atau ketik nomer resi lalu Enter…" autocomplete="off" autofocus style="font-size:18px;padding:14px;">
+    <div id="resiScanResult" style="margin-top:10px;"></div>
   </div>`;
-}
 
-function computeOrderImpact(){
-  const usage = {}; // productId -> qty used
-  const rows = [];
-  for(const r of orderRows){
-    if(!r.packageId || !r.qty) continue;
-    const pkg = getPackage(r.packageId);
-    if(!pkg) continue;
-    const qty = parseFloat(r.qty)||0;
-    if(qty<=0) continue;
-    rows.push({pkg, qty});
-    for(const it of pkg.items){
-      usage[it.productId] = (usage[it.productId]||0) + it.qty*qty;
-    }
+  // --- Riwayat ---
+  html += `<div class="section-title" style="margin-top:8px;"><h2>Daftar Resi</h2></div>`;
+  html += `<div class="filter-chips">
+    ${['all','Belum Packing','Scan Packing','Retur','Selesai'].map(f=>{
+      const lbl = f==='all' ? 'Semua' : f;
+      return `<button class="chip ${resiFilter===f?'active':''}" data-resi-filter="${f}">${lbl}</button>`;
+    }).join('')}
+  </div>`;
+
+  let list = state.resi||[];
+  if(resiFilter!=='all') list = list.filter(r=>r.status===resiFilter);
+  list = [...list].sort((a,b)=>(b.ts||0)-(a.ts||0));
+
+  if(!list.length){
+    html += `<div class="empty-state"><span class="emoji">📦</span>Belum ada data resi. Import PDF label dulu di atas.</div>`;
+  } else {
+    html += `<div style="overflow-x:auto;"><table><thead><tr><th>Resi</th><th>Nama</th><th>Qty</th><th>Status</th></tr></thead><tbody>
+      ${list.slice(0,200).map(r=>{
+        const badgeCls = {'Belum Packing':'badge-warn','Scan Packing':'badge-ok','Retur':'badge-danger','Selesai':'badge-in'}[r.status]||'badge-warn';
+        return `<tr>
+          <td class="mono small">${escHtml(r.resi)}${r.ket?`<div class="small muted">${escHtml(r.ket)}</div>`:''}</td>
+          <td class="small">${escHtml(r.name)}</td>
+          <td class="stock-num">${r.qty}</td>
+          <td><span class="badge ${badgeCls}">${escHtml(r.status)}</span></td>
+        </tr>`;
+      }).join('')}
+    </tbody></table></div>`;
   }
-  const details = [];
-  let hasNegative = false;
-  for(const pid in usage){
-    const p = getProduct(pid);
-    const after = (p?p.stock:0) - usage[pid];
-    if(after<0) hasNegative = true;
-    details.push({name: p?p.name:'(dihapus)', used: usage[pid], after});
-  }
-  return {rows, details, hasNegative};
+
+  return html;
 }
 
 /* =========================================================
@@ -884,6 +904,165 @@ function viewMutasi(){
 }
 
 /* =========================================================
+   RESI: PARSING PDF LABEL
+========================================================= */
+let pdfjsReady = null;
+function ensurePdfJs(){
+  if(pdfjsReady) return pdfjsReady;
+  pdfjsReady = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = ()=>{
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      resolve();
+    };
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  return pdfjsReady;
+}
+
+async function parseResiPdf(file){
+  await ensurePdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({data: buf}).promise;
+  const results = [];
+  for(let i=1;i<=pdf.numPages;i++){
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const fullText = content.items.map(it=>it.str).join(' ').replace(/\s+/g,' ').trim();
+    if(!fullText) continue;
+    results.push(...parseResiTextBlock(fullText));
+  }
+  return results;
+}
+
+// Pecah satu blok teks halaman PDF (hasil extract) jadi satu atau lebih baris resi
+function parseResiTextBlock(text){
+  const out = [];
+  // nomer resi J&T: huruf + 10 digit, bisa muncul berkali-kali, ambil yang pertama
+  const resiMatch = text.match(/\b[A-Z]{2}\d{10}\b/);
+  const resi = resiMatch ? resiMatch[0] : null;
+  if(!resi) return out;
+
+  // order id: angka panjang (15+ digit) setelah "Order Id" / "Order ID"
+  const orderIdMatch = text.match(/Order\s*Id\s*:?\s*(\d{10,})/i);
+  const orderId = orderIdMatch ? orderIdMatch[1] : '';
+
+  // ambil blok antara header tabel produk dan "Qty Total"
+  const prodMatch = text.match(/Product Name\s*SKU\s*Seller SKU\s*Qty\s*(.*?)\s*Qty Total\s*:\s*\d+/i);
+  if(!prodMatch) return out;
+  let chunk = prodMatch[1].trim();
+  // chunk biasanya diakhiri "...Default <qty>" — pisahkan nama produk dari "Default <qty>" di akhir
+  const tailMatch = chunk.match(/^(.*?)\s*Default\s+(\d+)\s*$/i);
+  let productText, qtyTotal;
+  if(tailMatch){ productText = tailMatch[1].trim(); qtyTotal = parseInt(tailMatch[2])||1; }
+  else { productText = chunk; qtyTotal = 1; }
+
+  // Hanya proses baris yang namanya diawali "PAKET" — selain itu dilewati (tidak diimpor)
+  if(!/^paket\b/i.test(productText.trim())) return out;
+
+  out.push(makeResiRow(resi, orderId, productText, qtyTotal));
+  return out;
+}
+
+function makeResiRow(resi, orderId, rawText, qty){
+  const match = findBestMatch(rawText);
+  return {
+    resi, orderId, rawText, qty: qty||1,
+    matchType: match ? match.type : null,
+    matchId: match ? match.id : null
+  };
+}
+
+// Coba cocokkan nama paket dari label ke paket yang sudah ada di sistem
+function findBestMatch(text){
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+  const t = norm(text);
+  let best = null, bestLen = 0;
+  for(const pkg of state.packages){
+    const n = norm(pkg.name);
+    if(n && (t.includes(n) || n.includes(t)) && n.length>bestLen){
+      best = {type:'paket', id:pkg.id}; bestLen = n.length;
+    }
+  }
+  return best;
+}
+
+/* =========================================================
+   RESI: PROSES SCAN
+========================================================= */
+function findResiEntries(code){
+  return (state.resi||[]).filter(r=>r.resi===code);
+}
+
+async function processResiScan(code){
+  const resultEl = document.getElementById('resiScanResult');
+  const entries = findResiEntries(code);
+  if(!entries.length){
+    if(resultEl) resultEl.innerHTML = `<div class="small" style="color:var(--danger);">❌ Resi <b>${escHtml(code)}</b> tidak ditemukan di database. Pastikan sudah di-import dari PDF.</div>`;
+    return;
+  }
+
+  if(resiScanMode==='retur'){
+    let changed = 0;
+    for(const r of entries){
+      if(r.status==='Retur'){ continue; }
+      r.status = 'Retur';
+      changed++;
+    }
+    render();
+    saveState();
+    const msg = changed
+      ? `<div class="small" style="color:var(--teal);">↩️ Resi <b>${escHtml(code)}</b> ditandai <b>Retur</b> (${changed} baris). Tambahkan stok barang yang masih layak jual lewat menu Mutasi &gt; Retur.</div>`
+      : `<div class="small muted">Resi ini sudah berstatus Retur sebelumnya.</div>`;
+    const el = document.getElementById('resiScanResult');
+    if(el) el.innerHTML = msg;
+    return;
+  }
+
+  // mode packing
+  const alreadyScanned = entries.every(r=>r.status==='Scan Packing');
+  if(alreadyScanned){
+    if(resultEl) resultEl.innerHTML = `<div class="small" style="color:var(--warn);">⚠️ Resi <b>${escHtml(code)}</b> sudah pernah di-scan packing sebelumnya. Stok tidak dikurangi lagi.</div>`;
+    return;
+  }
+
+  const summary = [];
+  for(const r of entries){
+    if(r.status!=='Belum Packing'){ continue; } // skip yang statusnya sudah Retur/Selesai
+    if(r.matchType==='paket'){
+      const pkg = getPackage(r.matchId);
+      if(pkg){
+        const changes = pkg.items.map(it=>{
+          const p = getProduct(it.productId);
+          return {productId: it.productId, name: p?p.name:'(dihapus)', delta: -(it.qty*r.qty)};
+        });
+        applyChangesToStock(changes);
+        addMovement('sale', `Scan resi ${r.resi} — paket "${pkg.name}" x${r.qty}`, changes, {resi:r.resi, packageId:pkg.id});
+        summary.push(`${pkg.name} x${r.qty}`);
+      }
+    } else if(r.matchType==='produk'){
+      const p = getProduct(r.matchId);
+      if(p){
+        const changes = [{productId:p.id, name:p.name, delta:-(r.qty)}];
+        applyChangesToStock(changes);
+        addMovement('sale', `Scan resi ${r.resi} — produk "${p.name}" x${r.qty}`, changes, {resi:r.resi, productId:p.id});
+        summary.push(`${p.name} x${r.qty}`);
+      }
+    }
+    r.status = 'Scan Packing';
+  }
+  render();
+  saveState();
+  const msg = summary.length
+    ? `<div class="small" style="color:var(--success);">✅ Resi <b>${escHtml(code)}</b> — stok dikurangi: ${summary.map(escHtml).join(', ')}.</div>`
+    : `<div class="small muted">Resi ditemukan tapi tidak ada baris yang diproses (mungkin belum dicocokkan ke produk/paket).</div>`;
+  const el = document.getElementById('resiScanResult');
+  if(el) el.innerHTML = msg;
+}
+
+/* =========================================================
    ESCAPE HELPERS
 ========================================================= */
 function escHtml(s){
@@ -905,11 +1084,10 @@ function bindViewEvents(){
   if(pfName) pfName.addEventListener('input', e=>{ paketFormState.name = e.target.value; });
 
   c.querySelectorAll('[data-field][data-idx]').forEach(el=>{
-    // shared by paket item rows and order rows -> distinguish by parent container id
     el.addEventListener('input', e=>{
       const idx = parseInt(e.target.dataset.idx);
       const field = e.target.dataset.field;
-      const parentId = e.target.closest('#pfItems') ? 'pf' : (e.target.closest('#orderRows') ? 'order' : null);
+      const parentId = e.target.closest('#pfItems') ? 'pf' : null;
       if(parentId==='pf' && paketFormState){
         if(field==='productId'){
           const typed = e.target.value.trim();
@@ -919,9 +1097,6 @@ function bindViewEvents(){
         } else {
           paketFormState.items[idx][field] = parseFloat(e.target.value)||0;
         }
-      } else if(parentId==='order'){
-        orderRows[idx][field] = e.target.value;
-        if(activeTab==='order'){ render(); }
       }
     });
   });
@@ -1076,43 +1251,89 @@ function bindViewEvents(){
     });
   });
 
-  /* ---------- ORDER ---------- */
-  const btnAddOrderRow = document.getElementById('btnAddOrderRow');
-  if(btnAddOrderRow) btnAddOrderRow.addEventListener('click', ()=>{
-    orderRows.push({packageId:'', qty:''});
-    render();
-  });
-  c.querySelectorAll('[data-remove-order-row]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const idx = parseInt(btn.dataset.removeOrderRow);
-      orderRows.splice(idx,1);
-      if(!orderRows.length) orderRows.push({packageId:'',qty:''});
+  /* ---------- SCAN RESI ---------- */
+  const resiPdfInput = document.getElementById('resiPdfInput');
+  if(resiPdfInput) resiPdfInput.addEventListener('change', async e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const statusEl = document.getElementById('resiImportStatus');
+    statusEl.textContent = 'Membaca PDF…';
+    try{
+      const parsed = await parseResiPdf(file);
+      if(!parsed.length){
+        statusEl.textContent = 'Tidak ada label resi yang terbaca dari PDF ini.';
+        return;
+      }
+      resiImportPreview = parsed;
+      statusEl.textContent = '';
       render();
+    }catch(err){
+      statusEl.textContent = 'Gagal membaca PDF: ' + (err.message||err);
+    }
+  });
+
+  c.querySelectorAll('[data-preview-match]').forEach(sel=>{
+    sel.addEventListener('change', e=>{
+      const idx = parseInt(e.target.dataset.previewMatch);
+      const val = e.target.value;
+      if(!val){ resiImportPreview[idx].matchType=null; resiImportPreview[idx].matchId=null; }
+      else {
+        const [type,id] = val.split(/:(.+)/);
+        resiImportPreview[idx].matchType = type;
+        resiImportPreview[idx].matchId = id;
+      }
     });
   });
-  const btnConfirmOrder = document.getElementById('btnConfirmOrder');
-  if(btnConfirmOrder) btnConfirmOrder.addEventListener('click', async ()=>{
-    const impact = computeOrderImpact();
-    if(!impact.rows.length){ showToast('Isi minimal 1 baris order dengan qty valid','error'); return; }
-    if(impact.hasNegative){
-      if(!confirm('Stok sebagian produk tidak cukup dan akan menjadi minus. Tetap proses?')) return;
-    } else {
-      if(!confirm('Proses order ini dan kurangi stok sekarang?')) return;
-    }
-    for(const r of impact.rows){
-      const changes = r.pkg.items.map(it=>{
-        const p = getProduct(it.productId);
-        return {productId: it.productId, name: p?p.name:'(dihapus)', delta: -(it.qty*r.qty)};
+  c.querySelectorAll('[data-preview-qty]').forEach(inp=>{
+    inp.addEventListener('input', e=>{
+      const idx = parseInt(e.target.dataset.previewQty);
+      resiImportPreview[idx].qty = parseFloat(e.target.value)||1;
+    });
+  });
+
+  const btnSaveResiImport = document.getElementById('btnSaveResiImport');
+  if(btnSaveResiImport) btnSaveResiImport.addEventListener('click', async ()=>{
+    let added = 0, skipped = 0;
+    for(const r of resiImportPreview){
+      if(!r.matchType || !r.matchId){ skipped++; continue; }
+      let name = r.rawText;
+      if(r.matchType==='paket'){ const pkg=getPackage(r.matchId); if(pkg) name=pkg.name; }
+      else { const p=getProduct(r.matchId); if(p) name=p.name; }
+      state.resi.push({
+        id: uid(), resi: r.resi, orderId: r.orderId||'', ts: Date.now(),
+        matchType: r.matchType, matchId: r.matchId, name, qty: r.qty,
+        status: 'Belum Packing', ket: r.qty>1 ? 'Qty lebih dari 1' : ''
       });
-      applyChangesToStock(changes);
-      addMovement('sale', `Jual paket "${r.pkg.name}" x${r.qty}`, changes, {packageId:r.pkg.id, qty:r.qty});
+      added++;
     }
-    await saveState();
-    orderRows = [{packageId:'', qty:''}];
-    formOpen = false;
-    showToast('Order diproses, stok terupdate','success');
+    render();
+    saveState();
+    resiImportPreview = null;
+    showToast(`${added} baris disimpan${skipped?`, ${skipped} dilewati (belum dicocokkan)`:''}`, 'success');
     render();
   });
+  const btnCancelResiImport = document.getElementById('btnCancelResiImport');
+  if(btnCancelResiImport) btnCancelResiImport.addEventListener('click', ()=>{ resiImportPreview = null; render(); });
+
+  c.querySelectorAll('[data-scan-mode]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ resiScanMode = btn.dataset.scanMode; render(); });
+  });
+  c.querySelectorAll('[data-resi-filter]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ resiFilter = btn.dataset.resiFilter; render(); });
+  });
+
+  const resiScanInput = document.getElementById('resiScanInput');
+  if(resiScanInput){
+    resiScanInput.focus();
+    resiScanInput.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){
+        e.preventDefault();
+        const code = e.target.value.trim();
+        if(code) processResiScan(code);
+        e.target.value = '';
+      }
+    });
+  }
 
   /* ---------- MUTASI ---------- */
   const btnToggleMasuk = document.getElementById('btnToggleMasuk');
