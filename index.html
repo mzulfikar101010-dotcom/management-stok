@@ -31,7 +31,7 @@
     --shadow:0 2px 10px rgba(44,38,32,0.08);
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;padding:0;}
+  html,body{margin:0;padding:0;overscroll-behavior-y:contain;}
   body{
     background:var(--bg);
     color:var(--ink);
@@ -48,6 +48,7 @@
     display:flex;
     flex-direction:column;
     padding-bottom:76px;
+    overscroll-behavior-y:contain;
   }
   header.topbar{
     background:var(--teal);
@@ -371,7 +372,8 @@ async function loadState(silent){
   }
   try{
     const res = await fetch(SHEET_API_URL, { method:'GET' });
-    const data = await res.json();
+    const text = await res.text();
+    const data = parseJsonOrExplain(text);
     state = {
       products: data.products || [],
       packages: data.packages || [],
@@ -382,6 +384,15 @@ async function loadState(silent){
     showToast('Gagal memuat data dari Google Sheets: ' + (e.message||''), 'error');
   }
   if(!silent) hideLoading();
+}
+
+// Kadang Apps Script membalas halaman HTML (error izin akses / quota), bukan JSON.
+// Ini mendeteksi itu dan kasih pesan yang jelas, bukan error teknis mentah.
+function parseJsonOrExplain(text){
+  try{ return JSON.parse(text); }
+  catch(e){
+    throw new Error('Server Google Sheets membalas bukan data (kemungkinan izin akses Apps Script belum "Anyone", belum di-deploy ulang, atau sedang dibatasi Google karena terlalu sering diakses). Coba tekan Sync lagi sebentar lagi.');
+  }
 }
 
 async function saveState(){
@@ -397,7 +408,8 @@ async function saveState(){
       headers: {'Content-Type':'text/plain;charset=utf-8'}, // hindari CORS preflight
       body: JSON.stringify(state)
     });
-    const json = await res.json();
+    const text = await res.text();
+    const json = parseJsonOrExplain(text);
     if(!json || !json.ok){ showToast('Gagal menyimpan ke Google Sheets.', 'error'); return false; }
     return true;
   }catch(e){
@@ -965,16 +977,28 @@ async function parseResiPdf(file){
 }
 
 // Pecah satu blok teks halaman PDF (hasil extract) jadi satu atau lebih baris resi
+// Mengenali 2 format nomer resi:
+// 1) Format lama (J&T Express): 2 huruf + 10 digit, misal JY1821273076
+// 2) Format baru (J&T Cargo/FastTrack dll): angka polos 10-13 digit di bawah barcode
+function extractResiCode(text, orderId){
+  const old = text.match(/\b[A-Z]{2}\d{10}\b/);
+  if(old) return old[0];
+  const candidates = text.match(/\b\d{10,13}\b/g) || [];
+  for(const c of candidates){
+    if(c !== orderId) return c; // ambil angka 10-13 digit pertama yang bukan Order ID
+  }
+  return null;
+}
+
 function parseResiTextBlock(text){
   const out = [];
-  // nomer resi J&T: huruf + 10 digit, bisa muncul berkali-kali, ambil yang pertama
-  const resiMatch = text.match(/\b[A-Z]{2}\d{10}\b/);
-  const resi = resiMatch ? resiMatch[0] : null;
-  if(!resi) return out;
 
-  // order id: angka panjang (15+ digit) setelah "Order Id" / "Order ID"
+  // order id: angka panjang setelah "Order Id" / "TT Order ID" / "Order ID"
   const orderIdMatch = text.match(/Order\s*Id\s*:?\s*(\d{10,})/i);
   const orderId = orderIdMatch ? orderIdMatch[1] : '';
+
+  const resi = extractResiCode(text, orderId);
+  if(!resi) return out;
 
   // ambil blok antara header tabel produk dan "Qty Total"
   const prodMatch = text.match(/Product Name\s*SKU\s*Seller SKU\s*Qty\s*(.*?)\s*Qty Total\s*:\s*\d+/i);
@@ -1096,27 +1120,36 @@ async function processResiScan(code){
 
   // Default: proses packing untuk baris yang masih "Belum Packing"
   const summary = [];
+  const warnings = [];
   for(const r of entries){
     if(r.status!=='Belum Packing'){ continue; }
     if(r.matchType==='paket'){
-      const pkg = getPackage(r.matchId);
+      const pkg = getPackage(r.matchId) || getPackage(r.name);
       if(pkg){
+        const missing = [];
         const changes = pkg.items.map(it=>{
           const p = getProduct(it.productId);
+          if(!p) missing.push(it.productId);
           return {productId: it.productId, name: p?p.name:'(dihapus)', delta: -(it.qty*r.qty)};
         });
         applyChangesToStock(changes);
         addMovement('sale', `Scan resi ${r.resi} — paket "${pkg.name}" x${r.qty}`, changes, {resi:r.resi, packageId:pkg.id});
         summary.push(`${pkg.name} x${r.qty}`);
+        if(missing.length) warnings.push(`Produk "${missing.join(', ')}" dalam paket "${pkg.name}" tidak ketemu — stok produk itu TIDAK dikurangi.`);
+      } else {
+        warnings.push(`Paket "${r.name}" tidak ditemukan di halaman Paket — stok tidak dikurangi sama sekali untuk resi ini.`);
       }
+    } else {
+      warnings.push(`Baris resi ini belum dicocokkan ke paket manapun — stok tidak dikurangi.`);
     }
     r.status = 'Scan Packing';
   }
   render();
   saveState();
-  const msg = summary.length
+  let msg = summary.length
     ? `<div class="small" style="color:var(--success);">✅ Resi <b>${escHtml(code)}</b> — stok dikurangi: ${summary.map(escHtml).join(', ')}.</div>`
-    : `<div class="small muted">Resi ditemukan tapi tidak ada baris yang diproses (mungkin belum dicocokkan ke paket).</div>`;
+    : `<div class="small muted">Resi ditemukan tapi tidak ada baris yang diproses.</div>`;
+  if(warnings.length) msg += warnings.map(w=>`<div class="small" style="color:var(--danger);margin-top:4px;">⚠️ ${escHtml(w)}</div>`).join('');
   const el = document.getElementById('resiScanResult');
   if(el) el.innerHTML = msg;
 }
