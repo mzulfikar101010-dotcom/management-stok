@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Stok Jajan</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1F5D50">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
@@ -298,6 +302,18 @@
 
   ::placeholder{color:#BFB49C;}
   input.invalid-combo{border-color:var(--danger)!important;background:var(--danger-bg);}
+  .combo-wrap{position:relative;}
+  .combo-dropdown{
+    position:absolute;top:calc(100% + 4px);left:0;right:0;
+    background:#fff;border:1.5px solid var(--border);border-radius:10px;
+    max-height:190px;overflow-y:auto;z-index:80;
+    box-shadow:0 6px 18px rgba(44,38,32,0.18);display:none;
+  }
+  .combo-dropdown.show{display:block;}
+  .combo-item{padding:9px 12px;font-size:14px;cursor:pointer;border-bottom:1px solid var(--border);}
+  .combo-item:last-child{border-bottom:none;}
+  .combo-item:hover,.combo-item.active{background:#F1EAD8;}
+  .combo-item .stock-hint{float:right;color:var(--muted);font-size:12px;font-family:'JetBrains Mono',monospace;}
 
   @media (max-width:380px){
     .stat-pill{min-width:76px;padding:7px 9px;}
@@ -335,7 +351,7 @@
    DATA LAYER
 ========================================================= */
 // >>> GANTI URL DI BAWAH INI dengan URL Web App hasil deploy Google Apps Script kamu <<<
-const SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbyyFDNhJCV0APNL0-hULkD83cBZwQ3rWMCCj6DaNCdeKFnrxJMsaZOWv8VBY48asCLm/exec';
+const SHEET_API_URL = 'PASTE_URL_WEB_APP_GOOGLE_APPS_SCRIPT_DI_SINI';
 
 let state = { products: [], packages: [], movements: [], resi: [] };
 let uiBusy = false;
@@ -344,7 +360,7 @@ let formOpen = false;
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
 function sheetUrlConfigured(){
-  return SHEET_API_URL && SHEET_API_URL.indexOf('PASTE_URL') === -1;
+  return SHEET_API_URL && SHEET_API_URL.indexOf('https://script.google.com/macros/s/AKfycbyyFDNhJCV0APNL0-hULkD83cBZwQ3rWMCCj6DaNCdeKFnrxJMsaZOWv8VBY48asCLm/exec') === -1;
 }
 
 async function loadState(silent){
@@ -469,7 +485,7 @@ function renderNav(){
   `).join('');
   nav.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      
+     
       formOpen = false;
       activeTab = btn.dataset.tab;
       render();
@@ -480,7 +496,7 @@ function renderNav(){
 function renderStats(){
   const totalProduk = state.products.length;
   const totalPaket = state.packages.length;
-  const stokMenipis = state.products.filter(p=>p.stock<=5).length;
+  const stokMenipis = state.products.filter(p=>p.stock>0 && p.stock<=((p.criticalStock===undefined||p.criticalStock===null)?30:p.criticalStock)).length;
   const stokHabis = state.products.filter(p=>p.stock<=0).length;
   document.getElementById('statsStrip').innerHTML = `
     <div class="stat-pill"><div class="num">${totalProduk}</div><div class="lbl">Produk</div></div>
@@ -587,14 +603,12 @@ function viewPaket(){
 }
 
 function renderPaketItemRow(it, idx){
-  const prods = sortedProducts();
-  const listId = `pfProdList${idx}`;
   return `<div class="item-row" data-idx="${idx}">
-    <input type="text" data-field="productId" data-idx="${idx}" list="${listId}" autocomplete="off"
-      placeholder="Ketik nama produk…" value="${escAttr(it.productId||'')}">
-    <datalist id="${listId}">
-      ${prods.map(p=>`<option value="${escAttr(p.name)}">`).join('')}
-    </datalist>
+    <div class="combo-wrap" style="flex:2;">
+      <input type="text" data-field="productId" data-idx="${idx}" data-combo="pfProd${idx}" autocomplete="off"
+        placeholder="Ketik nama produk…" value="${escAttr(it.productId||'')}">
+      <div class="combo-dropdown" id="pfProdDropdown${idx}"></div>
+    </div>
     <input type="number" min="1" step="1" data-field="qty" data-idx="${idx}" value="${it.qty}" placeholder="Qty">
     <button class="icon-btn" data-remove-item="${idx}" type="button">✕</button>
   </div>`;
@@ -641,15 +655,17 @@ function viewStok(){
         <thead><tr><th>Nama Produk (A–Z)</th><th>Stok</th><th></th></tr></thead>
         <tbody>
         ${list.map(p=>{
+          const crit = (p.criticalStock===undefined||p.criticalStock===null) ? 30 : p.criticalStock;
           const badge = p.stock<=0 ? '<span class="badge badge-danger">Habis</span>'
-                        : p.stock<=5 ? '<span class="badge badge-warn">Menipis</span>'
+                        : p.stock<=crit ? '<span class="badge badge-warn">Menipis</span>'
                         : '<span class="badge badge-ok">Aman</span>';
           if(editingStockId === p.id){
             return `<tr>
               <td>${escHtml(p.name)}<div class="small">${badge}</div></td>
               <td colspan="2">
-                <div class="field-row">
-                  <input type="number" id="adjStockInput" value="${p.stock}" style="max-width:100px;">
+                <div class="field-row" style="flex-wrap:wrap;">
+                  <div class="field" style="flex:1;min-width:90px;"><label>Stok</label><input type="number" id="adjStockInput" value="${p.stock}"></div>
+                  <div class="field" style="flex:1;min-width:90px;"><label>Stok Kritis</label><input type="number" id="adjCritInput" value="${crit}"></div>
                   <button class="btn btn-primary btn-sm" data-save-stock="${p.id}">💾</button>
                   <button class="btn btn-ghost btn-sm" data-cancel-stock="1">✕</button>
                 </div>
@@ -658,10 +674,10 @@ function viewStok(){
           }
           return `<tr>
             <td>${escHtml(p.name)}<div style="margin-top:2px;">${badge}</div></td>
-            <td class="stock-num">${p.stock}</td>
+            <td class="stock-num">${p.stock}<div class="small muted">kritis: ${crit}</div></td>
             <td>
               <div style="display:flex;gap:4px;">
-                <button class="btn btn-ghost btn-sm" data-edit-stock="${p.id}" title="Sesuaikan stok">✏️</button>
+                <button class="btn btn-ghost btn-sm" data-edit-stock="${p.id}" title="Sesuaikan stok & stok kritis">✏️</button>
                 <button class="btn btn-danger btn-sm" data-del-product="${p.id}" title="Hapus produk">🗑️</button>
               </div>
             </td>
@@ -701,14 +717,19 @@ function viewLaporan(){
     }
   }
 
-  const kritis = sortedProducts().filter(p=>p.stock<=5).sort((a,b)=>a.stock-b.stock);
-  html += `<div class="section-title" style="margin-top:18px;"><h2>Stok Kritis (≤ 5)</h2></div>`;
+  const kritis = sortedProducts()
+    .filter(p=>p.stock<=((p.criticalStock===undefined||p.criticalStock===null)?30:p.criticalStock))
+    .sort((a,b)=>a.stock-b.stock);
+  html += `<div class="section-title" style="margin-top:18px;"><h2>Stok Kritis</h2></div>`;
   if(!kritis.length){
     html += `<div class="empty-state"><span class="emoji">✅</span>Aman, tidak ada stok menipis.</div>`;
   } else {
     html += `<div class="card" style="padding:0;">
-      <table><thead><tr><th>Produk</th><th>Sisa Stok</th></tr></thead>
-      <tbody>${kritis.map(p=>`<tr><td>${escHtml(p.name)}</td><td class="stock-num" style="color:${p.stock<=0?'var(--danger)':'var(--warn)'}">${p.stock}</td></tr>`).join('')}</tbody>
+      <table><thead><tr><th>Produk</th><th>Sisa Stok</th><th>Batas Kritis</th></tr></thead>
+      <tbody>${kritis.map(p=>{
+        const crit = (p.criticalStock===undefined||p.criticalStock===null)?30:p.criticalStock;
+        return `<tr><td>${escHtml(p.name)}</td><td class="stock-num" style="color:${p.stock<=0?'var(--danger)':'var(--warn)'}">${p.stock}</td><td class="small muted">${crit}</td></tr>`;
+      }).join('')}</tbody>
       </table>
     </div>`;
   }
@@ -718,69 +739,72 @@ function viewLaporan(){
 /* =========================================================
    VIEW: SCAN RESI (Import PDF + Scan Packing/Retur + Riwayat)
 ========================================================= */
-let resiScanMode = 'packing'; // 'packing' | 'retur'
 let resiImportPreview = null; // array hasil parsing PDF sebelum disimpan
-let resiImportBusy = false;
 let resiFilter = 'all';
+let resiManualInputOpen = false;
 
 function viewResi(){
   let html = `<div class="section-title"><h2>Scan Resi</h2></div>`;
 
-  // --- Import PDF ---
+  // --- Import PDF (resi baru, status awal "Belum Packing") ---
   html += `<div class="card">
     <h3>📥 Import Resi dari PDF Label</h3>
-    <div class="small muted" style="margin-bottom:8px;">Upload file PDF label pengiriman (hasil print dari marketplace). Resi & produknya akan otomatis terbaca.</div>
+    <div class="small muted" style="margin-bottom:8px;">Upload file PDF label pengiriman (hasil print dari marketplace). Resi & nama paketnya otomatis terbaca. Resi yang sudah pernah diimport sebelumnya otomatis dilewati.</div>
     <input type="file" id="resiPdfInput" accept="application/pdf">
     <div id="resiImportStatus" class="small muted" style="margin-top:6px;"></div>
   </div>`;
 
   if(resiImportPreview && resiImportPreview.length){
+    const validCount = resiImportPreview.filter(r=>!r.isDuplicate).length;
     html += `<div class="card">
       <h3>Pratinjau Hasil Baca (${resiImportPreview.length} baris)</h3>
-      <div class="small muted" style="margin-bottom:8px;">Hanya baris berawalan "PAKET" yang dibaca dari label. Cek dulu, terutama yang bertanda ⚠️ (belum cocok dengan paket manapun) — pilih manual lewat dropdown.</div>
+      <div class="small muted" style="margin-bottom:8px;">Hanya baris berawalan "PAKET" yang dibaca dari label. Baris bertanda 🔁 sudah ada di database (dilewati otomatis). Baris bertanda ⚠️ belum cocok ke paket manapun — pilih manual.</div>
       <div style="overflow-x:auto;">
       <table><thead><tr><th>Resi</th><th>Teks Asli</th><th>Cocokkan ke Paket</th><th>Qty</th></tr></thead>
       <tbody>
-      ${resiImportPreview.map((r,idx)=>`<tr>
+      ${resiImportPreview.map((r,idx)=>`<tr style="${r.isDuplicate?'opacity:0.5;':''}">
         <td class="mono small">${escHtml(r.resi)}</td>
-        <td class="small">${escHtml(r.rawText)}${!r.matchType?' ⚠️':''}</td>
+        <td class="small">${escHtml(r.rawText)}${r.isDuplicate?' 🔁 <span class="small muted">sudah ada</span>':(!r.matchType?' ⚠️':'')}</td>
         <td>
-          <select data-preview-match="${idx}">
+          <select data-preview-match="${idx}" ${r.isDuplicate?'disabled':''}>
             <option value="">— tidak dikenali —</option>
             ${state.packages.map(p=>`<option value="paket:${escAttr(p.id)}" ${r.matchType==='paket'&&r.matchId===p.id?'selected':''}>${escHtml(p.name)}</option>`).join('')}
           </select>
         </td>
-        <td><input type="number" min="1" data-preview-qty="${idx}" value="${r.qty}" style="width:60px;"></td>
+        <td><input type="number" min="1" data-preview-qty="${idx}" value="${r.qty}" style="width:60px;" ${r.isDuplicate?'disabled':''}></td>
       </tr>`).join('')}
       </tbody></table>
       </div>
       <div style="display:flex;gap:8px;margin-top:10px;">
-        <button class="btn btn-primary btn-block" id="btnSaveResiImport">💾 Simpan ${resiImportPreview.length} Baris ke Database</button>
+        <button class="btn btn-primary btn-block" id="btnSaveResiImport">💾 Simpan ${validCount} Baris Baru</button>
         <button class="btn btn-ghost" id="btnCancelResiImport">Batal</button>
       </div>
     </div>`;
   }
 
+  // --- Import Retur (xlsx dari marketplace) ---
+  html += `<div class="card">
+    <h3>↩️ Import Resi Retur (Excel)</h3>
+    <div class="small muted" style="margin-bottom:8px;">Upload file Excel retur harian. Semua nomer resi di file ini yang berstatus "Scan Packing" otomatis diubah jadi "Retur".</div>
+    <input type="file" id="resiReturXlsxInput" accept=".xlsx,.xls">
+    <div id="resiReturImportStatus" class="small muted" style="margin-top:6px;"></div>
+  </div>`;
+
   // --- Scan ---
   html += `<div class="card">
     <h3>🔍 Scan Resi</h3>
-    <div class="filter-chips">
-      <button class="chip ${resiScanMode==='packing'?'active':''}" data-scan-mode="packing">📦 Mode Packing</button>
-      <button class="chip ${resiScanMode==='retur'?'active':''}" data-scan-mode="retur">↩️ Mode Retur</button>
+    <div class="small muted" style="margin:0 0 8px;">
+      Scan resi paket: kalau statusnya <b>Belum Packing</b> → stok otomatis berkurang & jadi <b>Scan Packing</b>. Kalau statusnya <b>Retur</b> (sudah diimport dari file retur) → scan untuk konfirmasi paket sudah fisik kembali, status jadi <b>Retur Cek</b>.
     </div>
-    <div class="small muted" style="margin:6px 0 8px;">
-      ${resiScanMode==='packing'
-        ? 'Scan resi saat paket selesai di-packing — stok produk otomatis berkurang.'
-        : 'Scan resi paket yang diretur — status berubah jadi Retur. Stok TIDAK otomatis bertambah; tambahkan manual lewat menu Mutasi > Retur untuk barang yang masih layak jual.'}
-    </div>
-    <input type="text" id="resiScanInput" placeholder="Scan atau ketik nomer resi lalu Enter…" autocomplete="off" autofocus style="font-size:18px;padding:14px;">
+    <input type="text" id="resiScanInput" inputmode="none" placeholder="Siap discan…" autocomplete="off" autofocus style="font-size:18px;padding:14px;">
+    <button class="btn btn-ghost btn-block" id="btnManualResiInput" style="margin-top:8px;" type="button">⌨️ Input Manual</button>
     <div id="resiScanResult" style="margin-top:10px;"></div>
   </div>`;
 
   // --- Riwayat ---
   html += `<div class="section-title" style="margin-top:8px;"><h2>Daftar Resi</h2></div>`;
   html += `<div class="filter-chips">
-    ${['all','Belum Packing','Scan Packing','Retur','Selesai'].map(f=>{
+    ${['all','Belum Packing','Scan Packing','Retur','Retur Cek','Selesai'].map(f=>{
       const lbl = f==='all' ? 'Semua' : f;
       return `<button class="chip ${resiFilter===f?'active':''}" data-resi-filter="${f}">${lbl}</button>`;
     }).join('')}
@@ -795,7 +819,7 @@ function viewResi(){
   } else {
     html += `<div style="overflow-x:auto;"><table><thead><tr><th>Resi</th><th>Nama</th><th>Qty</th><th>Status</th></tr></thead><tbody>
       ${list.slice(0,200).map(r=>{
-        const badgeCls = {'Belum Packing':'badge-warn','Scan Packing':'badge-ok','Retur':'badge-danger','Selesai':'badge-in'}[r.status]||'badge-warn';
+        const badgeCls = {'Belum Packing':'badge-warn','Scan Packing':'badge-ok','Retur':'badge-danger','Retur Cek':'badge-in','Selesai':'badge-in'}[r.status]||'badge-warn';
         return `<tr>
           <td class="mono small">${escHtml(r.resi)}${r.ket?`<div class="small muted">${escHtml(r.ket)}</div>`:''}</td>
           <td class="small">${escHtml(r.name)}</td>
@@ -830,11 +854,9 @@ function viewMutasi(){
   if(showMasukForm){
     html += `<div class="card">
       <h3>📥 Barang Masuk dari Supplier</h3>
-      <div class="field"><label>Produk</label>
-        <input type="text" id="masukProduct" list="masukProdList" autocomplete="off" placeholder="Ketik nama produk…" value="${escAttr(masukForm.productId||'')}">
-        <datalist id="masukProdList">
-          ${sortedProducts().map(p=>`<option value="${escAttr(p.name)}">`).join('')}
-        </datalist>
+      <div class="field combo-wrap"><label>Produk</label>
+        <input type="text" id="masukProduct" autocomplete="off" placeholder="Ketik nama produk…" value="${escAttr(masukForm.productId||'')}">
+        <div class="combo-dropdown" id="masukProductDropdown"></div>
       </div>
       <div class="field-row">
         <div class="field"><label>Qty Masuk</label><input type="number" id="masukQty" min="1" value="${masukForm.qty}"></div>
@@ -850,11 +872,9 @@ function viewMutasi(){
   if(showReturForm){
     html += `<div class="card">
       <h3>↩️ Retur Produk (Bisa Dijual Lagi)</h3>
-      <div class="field"><label>Produk</label>
-        <input type="text" id="returProduct" list="returProdList" autocomplete="off" placeholder="Ketik nama produk…" value="${escAttr(returForm.productId||'')}">
-        <datalist id="returProdList">
-          ${sortedProducts().map(p=>`<option value="${escAttr(p.name)}">`).join('')}
-        </datalist>
+      <div class="field combo-wrap"><label>Produk</label>
+        <input type="text" id="returProduct" autocomplete="off" placeholder="Ketik nama produk…" value="${escAttr(returForm.productId||'')}">
+        <div class="combo-dropdown" id="returProductDropdown"></div>
       </div>
       <div class="field-row">
         <div class="field"><label>Qty Retur</label><input type="number" id="returQty" min="1" value="${returForm.qty}"></div>
@@ -884,7 +904,7 @@ function viewMutasi(){
     html += list.slice(0,150).map(m=>{
       const badgeCls = {sale:'badge-sale', in:'badge-in', return:'badge-return', adjust:'badge-adjust'}[m.type] || 'badge-in';
       const badgeLbl = {sale:'Jual', in:'Masuk', return:'Retur', adjust:'Penyesuaian'}[m.type] || m.type;
-      const detail = m.changes.map(c=>`${escHtml(c.name)} <span class="mono">${c.delta>0?'+':''}${c.delta}</span>`).join(', ');
+      const detail = m.changes.map(c=>`- ${escHtml(c.name)} <span class="mono">${c.delta>0?'+':''}${c.delta}</span>`).join('<br>');
       return `<div class="card">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
           <div>
@@ -927,12 +947,19 @@ async function parseResiPdf(file){
   const buf = await file.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({data: buf}).promise;
   const results = [];
+  const seenInBatch = new Set();
+  const existingResi = new Set((state.resi||[]).map(r=>r.resi));
   for(let i=1;i<=pdf.numPages;i++){
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const fullText = content.items.map(it=>it.str).join(' ').replace(/\s+/g,' ').trim();
     if(!fullText) continue;
-    results.push(...parseResiTextBlock(fullText));
+    const rows = parseResiTextBlock(fullText);
+    for(const r of rows){
+      r.isDuplicate = existingResi.has(r.resi) || seenInBatch.has(r.resi);
+      seenInBatch.add(r.resi);
+      results.push(r);
+    }
   }
   return results;
 }
@@ -990,47 +1017,87 @@ function findBestMatch(text){
 }
 
 /* =========================================================
-   RESI: PROSES SCAN
+   RESI: IMPORT RETUR DARI EXCEL
+========================================================= */
+let xlsxReady = null;
+function ensureXlsxLib(){
+  if(xlsxReady) return xlsxReady;
+  xlsxReady = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  return xlsxReady;
+}
+
+// Scan semua sel di semua sheet file Excel, cari pola nomer resi (2 huruf + 10 digit)
+async function parseReturXlsx(file){
+  await ensureXlsxLib();
+  const buf = await file.arrayBuffer();
+  const wb = window.XLSX.read(buf, {type:'array'});
+  const found = new Set();
+  const resiPattern = /\b[A-Z]{2}\d{10}\b/g;
+  wb.SheetNames.forEach(sheetName=>{
+    const sheet = wb.Sheets[sheetName];
+    const rows = window.XLSX.utils.sheet_to_json(sheet, {header:1, raw:false});
+    rows.forEach(row=>{
+      row.forEach(cell=>{
+        if(cell==null) return;
+        const str = String(cell);
+        let m;
+        while((m = resiPattern.exec(str))){ found.add(m[0]); }
+      });
+    });
+  });
+  return [...found];
+}
+
+/* =========================================================
+   RESI: PROSES SCAN (satu alur, berdasarkan status saat ini)
 ========================================================= */
 function findResiEntries(code){
   return (state.resi||[]).filter(r=>r.resi===code);
 }
 
 async function processResiScan(code){
-  const resultEl = document.getElementById('resiScanResult');
   const entries = findResiEntries(code);
   if(!entries.length){
-    if(resultEl) resultEl.innerHTML = `<div class="small" style="color:var(--danger);">❌ Resi <b>${escHtml(code)}</b> tidak ditemukan di database. Pastikan sudah di-import dari PDF.</div>`;
+    const el = document.getElementById('resiScanResult');
+    if(el) el.innerHTML = `<div class="small" style="color:var(--danger);">❌ Resi <b>${escHtml(code)}</b> tidak ditemukan di database. Pastikan sudah di-import dari PDF.</div>`;
     return;
   }
 
-  if(resiScanMode==='retur'){
-    let changed = 0;
-    for(const r of entries){
-      if(r.status==='Retur'){ continue; }
-      r.status = 'Retur';
-      changed++;
-    }
+  // Resi berstatus Retur -> scan ini adalah konfirmasi paket sudah fisik kembali
+  const allRetur = entries.every(r=>r.status==='Retur');
+  if(allRetur){
+    for(const r of entries) r.status = 'Retur Cek';
     render();
     saveState();
-    const msg = changed
-      ? `<div class="small" style="color:var(--teal);">↩️ Resi <b>${escHtml(code)}</b> ditandai <b>Retur</b> (${changed} baris). Tambahkan stok barang yang masih layak jual lewat menu Mutasi &gt; Retur.</div>`
-      : `<div class="small muted">Resi ini sudah berstatus Retur sebelumnya.</div>`;
     const el = document.getElementById('resiScanResult');
-    if(el) el.innerHTML = msg;
+    if(el) el.innerHTML = `<div class="small" style="color:var(--teal);">↩️✅ Resi <b>${escHtml(code)}</b> dikonfirmasi diterima kembali — status jadi <b>Retur Cek</b>. Jangan lupa cek fisik barang & tambahkan stok yang masih layak jual lewat menu Mutasi &gt; Retur.</div>`;
     return;
   }
 
-  // mode packing
+  const alreadyChecked = entries.every(r=>r.status==='Retur Cek');
+  if(alreadyChecked){
+    const el = document.getElementById('resiScanResult');
+    if(el) el.innerHTML = `<div class="small muted">Resi ini sudah dikonfirmasi Retur Cek sebelumnya.</div>`;
+    return;
+  }
+
   const alreadyScanned = entries.every(r=>r.status==='Scan Packing');
   if(alreadyScanned){
-    if(resultEl) resultEl.innerHTML = `<div class="small" style="color:var(--warn);">⚠️ Resi <b>${escHtml(code)}</b> sudah pernah di-scan packing sebelumnya. Stok tidak dikurangi lagi.</div>`;
+    const el = document.getElementById('resiScanResult');
+    if(el) el.innerHTML = `<div class="small" style="color:var(--warn);">⚠️ Resi <b>${escHtml(code)}</b> sudah pernah di-scan packing sebelumnya. Stok tidak dikurangi lagi.</div>`;
     return;
   }
 
+  // Default: proses packing untuk baris yang masih "Belum Packing"
   const summary = [];
   for(const r of entries){
-    if(r.status!=='Belum Packing'){ continue; } // skip yang statusnya sudah Retur/Selesai
+    if(r.status!=='Belum Packing'){ continue; }
     if(r.matchType==='paket'){
       const pkg = getPackage(r.matchId);
       if(pkg){
@@ -1042,14 +1109,6 @@ async function processResiScan(code){
         addMovement('sale', `Scan resi ${r.resi} — paket "${pkg.name}" x${r.qty}`, changes, {resi:r.resi, packageId:pkg.id});
         summary.push(`${pkg.name} x${r.qty}`);
       }
-    } else if(r.matchType==='produk'){
-      const p = getProduct(r.matchId);
-      if(p){
-        const changes = [{productId:p.id, name:p.name, delta:-(r.qty)}];
-        applyChangesToStock(changes);
-        addMovement('sale', `Scan resi ${r.resi} — produk "${p.name}" x${r.qty}`, changes, {resi:r.resi, productId:p.id});
-        summary.push(`${p.name} x${r.qty}`);
-      }
     }
     r.status = 'Scan Packing';
   }
@@ -1057,7 +1116,7 @@ async function processResiScan(code){
   saveState();
   const msg = summary.length
     ? `<div class="small" style="color:var(--success);">✅ Resi <b>${escHtml(code)}</b> — stok dikurangi: ${summary.map(escHtml).join(', ')}.</div>`
-    : `<div class="small muted">Resi ditemukan tapi tidak ada baris yang diproses (mungkin belum dicocokkan ke produk/paket).</div>`;
+    : `<div class="small muted">Resi ditemukan tapi tidak ada baris yang diproses (mungkin belum dicocokkan ke paket).</div>`;
   const el = document.getElementById('resiScanResult');
   if(el) el.innerHTML = msg;
 }
@@ -1065,6 +1124,38 @@ async function processResiScan(code){
 /* =========================================================
    ESCAPE HELPERS
 ========================================================= */
+/* =========================================================
+   KOMPONEN: COMBO DROPDOWN PENCARIAN PRODUK
+========================================================= */
+// Memasang perilaku "laci" dropdown pada satu pasangan input+div.
+// inputEl: <input type="text">, dropdownEl: <div class="combo-dropdown">
+// onPick(name): dipanggil saat user memilih salah satu saran
+function attachProductCombo(inputEl, dropdownEl, onPick){
+  if(!inputEl || !dropdownEl) return;
+  function renderList(filterText){
+    const q = (filterText||'').trim().toLowerCase();
+    let items = sortedProducts();
+    if(q) items = items.filter(p=>p.name.toLowerCase().includes(q));
+    items = items.slice(0,30);
+    if(!items.length){ dropdownEl.classList.remove('show'); dropdownEl.innerHTML=''; return; }
+    dropdownEl.innerHTML = items.map(p=>`<div class="combo-item" data-pick="${escAttr(p.name)}">${escHtml(p.name)}<span class="stock-hint">stok ${p.stock}</span></div>`).join('');
+    dropdownEl.classList.add('show');
+    dropdownEl.querySelectorAll('[data-pick]').forEach(el=>{
+      el.addEventListener('mousedown', ev=>{
+        ev.preventDefault();
+        const name = el.dataset.pick;
+        inputEl.value = name;
+        inputEl.classList.remove('invalid-combo');
+        dropdownEl.classList.remove('show');
+        onPick(name);
+      });
+    });
+  }
+  inputEl.addEventListener('input', ()=>{ renderList(inputEl.value); onPick(inputEl.value.trim(), true); });
+  inputEl.addEventListener('focus', ()=>{ renderList(inputEl.value); });
+  inputEl.addEventListener('blur', ()=>{ setTimeout(()=>dropdownEl.classList.remove('show'), 150); });
+}
+
 function escHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 }
@@ -1083,21 +1174,21 @@ function bindViewEvents(){
   const pfName = document.getElementById('pfName');
   if(pfName) pfName.addEventListener('input', e=>{ paketFormState.name = e.target.value; });
 
-  c.querySelectorAll('[data-field][data-idx]').forEach(el=>{
+  // field qty (produk-id ditangani terpisah lewat combo dropdown di bawah)
+  c.querySelectorAll('#pfItems [data-field="qty"]').forEach(el=>{
     el.addEventListener('input', e=>{
       const idx = parseInt(e.target.dataset.idx);
-      const field = e.target.dataset.field;
-      const parentId = e.target.closest('#pfItems') ? 'pf' : null;
-      if(parentId==='pf' && paketFormState){
-        if(field==='productId'){
-          const typed = e.target.value.trim();
-          const match = state.products.find(p=>p.name.toLowerCase()===typed.toLowerCase());
-          paketFormState.items[idx].productId = match ? match.id : typed;
-          e.target.classList.toggle('invalid-combo', typed.length>0 && !match);
-        } else {
-          paketFormState.items[idx][field] = parseFloat(e.target.value)||0;
-        }
-      }
+      if(paketFormState) paketFormState.items[idx].qty = parseFloat(e.target.value)||0;
+    });
+  });
+  // combo dropdown nama produk di setiap baris isi paket
+  c.querySelectorAll('#pfItems input[data-field="productId"]').forEach(input=>{
+    const idx = parseInt(input.dataset.idx);
+    const dropdown = document.getElementById('pfProdDropdown'+idx);
+    attachProductCombo(input, dropdown, (typed)=>{
+      const match = state.products.find(p=>p.name.toLowerCase()===typed.toLowerCase());
+      paketFormState.items[idx].productId = match ? match.id : typed;
+      input.classList.toggle('invalid-combo', typed.length>0 && !match);
     });
   });
 
@@ -1124,7 +1215,7 @@ function bindViewEvents(){
     if(!name){ showToast('Nama produk wajib diisi','error'); return; }
     if(state.products.some(p=>p.name.toLowerCase()===name.toLowerCase())){ showToast('Nama produk sudah ada','error'); return; }
     const stock = parseFloat(stockEl.value)||0;
-    const newP = {id:name, name, stock};
+    const newP = {id:name, name, stock, criticalStock:30};
     state.products.push(newP);
     showToast('Produk baru ditambahkan');
     render();
@@ -1203,7 +1294,7 @@ function bindViewEvents(){
     const stock = parseFloat(document.getElementById('npStock').value)||0;
     if(!name){ showToast('Nama produk wajib diisi','error'); return; }
     if(state.products.some(p=>p.name.toLowerCase()===name.toLowerCase())){ showToast('Nama produk sudah ada','error'); return; }
-    state.products.push({id:name, name, stock});
+    state.products.push({id:name, name, stock, criticalStock:30});
     await saveState();
     newProductForm = false; formOpen = false;
     showToast('Produk ditambahkan','success');
@@ -1223,16 +1314,18 @@ function bindViewEvents(){
       const pid = btn.dataset.saveStock;
       const p = getProduct(pid);
       const newVal = parseFloat(document.getElementById('adjStockInput').value);
+      const newCrit = parseFloat(document.getElementById('adjCritInput').value);
       if(isNaN(newVal)){ showToast('Nilai stok tidak valid','error'); return; }
       const delta = newVal - p.stock;
       if(delta!==0){
         addMovement('adjust', 'Penyesuaian manual stok', [{productId:p.id, name:p.name, delta}]);
         p.stock = newVal;
       }
-      await saveState();
+      p.criticalStock = isNaN(newCrit) ? 30 : newCrit;
       editingStockId = null; formOpen=false;
-      showToast('Stok diperbarui','success');
       render();
+      saveState();
+      showToast('Stok diperbarui','success');
     });
   });
   c.querySelectorAll('[data-del-product]').forEach(btn=>{
@@ -1293,31 +1386,62 @@ function bindViewEvents(){
 
   const btnSaveResiImport = document.getElementById('btnSaveResiImport');
   if(btnSaveResiImport) btnSaveResiImport.addEventListener('click', async ()=>{
-    let added = 0, skipped = 0;
+    let added = 0, skipped = 0, duplicate = 0;
+    const existing = new Set((state.resi||[]).map(r=>r.resi));
     for(const r of resiImportPreview){
+      if(r.isDuplicate || existing.has(r.resi)){ duplicate++; continue; }
       if(!r.matchType || !r.matchId){ skipped++; continue; }
       let name = r.rawText;
-      if(r.matchType==='paket'){ const pkg=getPackage(r.matchId); if(pkg) name=pkg.name; }
-      else { const p=getProduct(r.matchId); if(p) name=p.name; }
+      const pkg=getPackage(r.matchId); if(pkg) name=pkg.name;
       state.resi.push({
         id: uid(), resi: r.resi, orderId: r.orderId||'', ts: Date.now(),
         matchType: r.matchType, matchId: r.matchId, name, qty: r.qty,
         status: 'Belum Packing', ket: r.qty>1 ? 'Qty lebih dari 1' : ''
       });
+      existing.add(r.resi);
       added++;
     }
+    resiImportPreview = null;
     render();
     saveState();
-    resiImportPreview = null;
-    showToast(`${added} baris disimpan${skipped?`, ${skipped} dilewati (belum dicocokkan)`:''}`, 'success');
-    render();
+    showToast(`${added} baris disimpan${skipped?`, ${skipped} dilewati (belum dicocokkan)`:''}${duplicate?`, ${duplicate} dilewati (resi sudah ada)`:''}`, 'success');
   });
   const btnCancelResiImport = document.getElementById('btnCancelResiImport');
   if(btnCancelResiImport) btnCancelResiImport.addEventListener('click', ()=>{ resiImportPreview = null; render(); });
 
-  c.querySelectorAll('[data-scan-mode]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ resiScanMode = btn.dataset.scanMode; render(); });
+  const resiReturXlsxInput = document.getElementById('resiReturXlsxInput');
+  if(resiReturXlsxInput) resiReturXlsxInput.addEventListener('change', async e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const statusEl = document.getElementById('resiReturImportStatus');
+    statusEl.textContent = 'Membaca file Excel…';
+    try{
+      const resiCodes = await parseReturXlsx(file);
+      if(!resiCodes.length){
+        statusEl.textContent = 'Tidak ada nomer resi yang terbaca dari file ini.';
+        return;
+      }
+      let changed = 0, notFound = 0, alreadyRetur = 0;
+      for(const code of resiCodes){
+        const entries = findResiEntries(code);
+        if(!entries.length){ notFound++; continue; }
+        let any = false;
+        for(const r of entries){
+          if(r.status==='Scan Packing'){ r.status='Retur'; any=true; }
+          else if(r.status==='Retur' || r.status==='Retur Cek'){ alreadyRetur++; }
+        }
+        if(any) changed++;
+      }
+      render();
+      saveState();
+      statusEl.textContent = '';
+      showToast(`${changed} resi diubah jadi Retur${notFound?`, ${notFound} tidak ditemukan di database`:''}${alreadyRetur?`, ${alreadyRetur} sudah berstatus Retur`:''}`, 'success');
+      e.target.value = '';
+    }catch(err){
+      statusEl.textContent = 'Gagal membaca file: ' + (err.message||err);
+    }
   });
+
   c.querySelectorAll('[data-resi-filter]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ resiFilter = btn.dataset.resiFilter; render(); });
   });
@@ -1334,6 +1458,11 @@ function bindViewEvents(){
       }
     });
   }
+  const btnManualResiInput = document.getElementById('btnManualResiInput');
+  if(btnManualResiInput) btnManualResiInput.addEventListener('click', ()=>{
+    const code = window.prompt('Masukkan nomer resi secara manual:');
+    if(code && code.trim()) processResiScan(code.trim());
+  });
 
   /* ---------- MUTASI ---------- */
   const btnToggleMasuk = document.getElementById('btnToggleMasuk');
@@ -1346,11 +1475,10 @@ function bindViewEvents(){
   });
 
   const masukProduct = document.getElementById('masukProduct');
-  if(masukProduct) masukProduct.addEventListener('input', e=>{
-    const typed = e.target.value.trim();
+  attachProductCombo(masukProduct, document.getElementById('masukProductDropdown'), (typed)=>{
     const match = state.products.find(p=>p.name.toLowerCase()===typed.toLowerCase());
     masukForm.productId = match ? match.id : typed;
-    e.target.classList.toggle('invalid-combo', typed.length>0 && !match);
+    if(masukProduct) masukProduct.classList.toggle('invalid-combo', typed.length>0 && !match);
   });
   const masukQty = document.getElementById('masukQty');
   if(masukQty) masukQty.addEventListener('input', e=>{ masukForm.qty = e.target.value; });
@@ -1376,11 +1504,10 @@ function bindViewEvents(){
   if(btnCancelMasuk) btnCancelMasuk.addEventListener('click', ()=>{ showMasukForm=false; formOpen=false; render(); });
 
   const returProduct = document.getElementById('returProduct');
-  if(returProduct) returProduct.addEventListener('input', e=>{
-    const typed = e.target.value.trim();
+  attachProductCombo(returProduct, document.getElementById('returProductDropdown'), (typed)=>{
     const match = state.products.find(p=>p.name.toLowerCase()===typed.toLowerCase());
     returForm.productId = match ? match.id : typed;
-    e.target.classList.toggle('invalid-combo', typed.length>0 && !match);
+    if(returProduct) returProduct.classList.toggle('invalid-combo', typed.length>0 && !match);
   });
   const returQty = document.getElementById('returQty');
   if(returQty) returQty.addEventListener('input', e=>{ returForm.qty = e.target.value; });
@@ -1450,6 +1577,9 @@ document.addEventListener('visibilitychange', async ()=>{
    INIT
 ========================================================= */
 (async function init(){
+  if('serviceWorker' in navigator){
+    try{ await navigator.serviceWorker.register('sw.js'); }catch(e){ /* biarkan, PWA tetap jalan tanpa SW di sebagian browser */ }
+  }
   await loadState(false);
   render();
 })();
