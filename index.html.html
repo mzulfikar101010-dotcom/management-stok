@@ -485,7 +485,7 @@ function renderNav(){
   `).join('');
   nav.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      if(formOpen && !confirm('Ada form yang belum disimpan. Pindah halaman & batalkan perubahan?')) return;
+      
       formOpen = false;
       activeTab = btn.dataset.tab;
       render();
