@@ -976,6 +976,13 @@ async function parseResiPdf(file){
   return results;
 }
 
+// Beberapa label mencetak angka dengan spasi di antara tiap digit (kerning font),
+// hasilnya pdf.js membaca "5 7 0 6 3 4 5 6 4 2 1 5" alih-alih "570634564215".
+// Gabungkan dulu deretan digit-spasi-digit (8+ digit) jadi angka menyambung.
+function collapseSpacedDigits(text){
+  return text.replace(/\d(?: \d){7,}/g, m => m.replace(/ /g,''));
+}
+
 // Pecah satu blok teks halaman PDF (hasil extract) jadi satu atau lebih baris resi
 // Mengenali 2 format nomer resi:
 // 1) Format lama (J&T Express): 2 huruf + 10 digit, misal JY1821273076
@@ -990,8 +997,9 @@ function extractResiCode(text, orderId){
   return null;
 }
 
-function parseResiTextBlock(text){
+function parseResiTextBlock(rawText){
   const out = [];
+  const text = collapseSpacedDigits(rawText);
 
   // order id: angka panjang setelah "Order Id" / "TT Order ID" / "Order ID"
   const orderIdMatch = text.match(/Order\s*Id\s*:?\s*(\d{10,})/i);
