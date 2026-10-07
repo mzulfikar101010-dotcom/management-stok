@@ -1064,13 +1064,15 @@ function ensureXlsxLib(){
   return xlsxReady;
 }
 
-// Scan semua sel di semua sheet file Excel, cari pola nomer resi (2 huruf + 10 digit)
+// Scan semua sel di semua sheet file Excel, cari pola nomer resi.
+// Mengenali 2 format sekaligus: huruf+10 digit (format lama, mis. JY1821273076)
+// dan angka polos 10-13 digit (format baru, mis. 570634564215).
 async function parseReturXlsx(file){
   await ensureXlsxLib();
   const buf = await file.arrayBuffer();
   const wb = window.XLSX.read(buf, {type:'array'});
   const found = new Set();
-  const resiPattern = /\b[A-Z]{2}\d{10}\b/g;
+  const resiPattern = /\b[A-Z]{2}\d{10}\b|\b\d{10,13}\b/g;
   wb.SheetNames.forEach(sheetName=>{
     const sheet = wb.Sheets[sheetName];
     const rows = window.XLSX.utils.sheet_to_json(sheet, {header:1, raw:false});
