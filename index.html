@@ -497,7 +497,6 @@ function renderNav(){
   `).join('');
   nav.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      
       formOpen = false;
       activeTab = btn.dataset.tab;
       render();
@@ -1075,7 +1074,10 @@ async function parseReturXlsx(file){
   const resiPattern = /\b[A-Z]{2}\d{10}\b|\b\d{10,13}\b/g;
   wb.SheetNames.forEach(sheetName=>{
     const sheet = wb.Sheets[sheetName];
-    const rows = window.XLSX.utils.sheet_to_json(sheet, {header:1, raw:false});
+    // raw:true (bukan raw:false) — kalau sel resi tersimpan sebagai ANGKA, versi
+    // "sudah diformat" (raw:false) malah membulatkannya ke notasi ilmiah
+    // (misal 570633287747 jadi "5.70633E+11"). Nilai mentah angka tetap presisi.
+    const rows = window.XLSX.utils.sheet_to_json(sheet, {header:1, raw:true});
     rows.forEach(row=>{
       row.forEach(cell=>{
         if(cell==null) return;
